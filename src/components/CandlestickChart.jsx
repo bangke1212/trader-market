@@ -1,83 +1,125 @@
 import { useEffect, useRef, useState } from 'react'
-import { createChart } from 'lightweight-charts'
 import { fetchKlines, subscribeToKlines } from '../lib/api'
 
 export default function CandlestickChart({ symbol, timeframe }) {
+  const canvasRef = useRef(null)
   const containerRef = useRef(null)
-  const chartRef = useRef(null)
-  const candleRef = useRef(null)
-  const volumeRef = useRef(null)
+  const dataRef = useRef([])
+  const [price, setPrice] = useState(0)
+  const [change, setChange] = useState(0)
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    if (!containerRef.current) return
+  // Draw chart using Canvas 2D
+  const draw = (ctx, w, h, data, currentPrice) => {
+    if (!data.length) return
+    ctx.clearRect(0, 0, w, h)
 
-    const chart = createChart(containerRef.current, {
-      layout: { background: { color: '#0d0e12' }, textColor: '#8b8b93' },
-      grid: { vertLines: { color: '#1a1a22' }, horzLines: { color: '#1a1a22' } },
-      crosshair: { mode: 0 },
-      rightPriceScale: { borderColor: '#2a2a30', scaleMargins: { top: 0.05, bottom: 0.25 } },
-      timeScale: { borderColor: '#2a2a30', timeVisible: true, secondsVisible: false },
-      width: containerRef.current.clientWidth,
-      height: containerRef.current.clientHeight,
-    })
+    const padding = { top: 20, right: 60, bottom: 30, left: 10 }
+    const chartW = w - padding.left - padding.right
+    const chartH = h - padding.top - padding.bottom
 
-    const candleSeries = chart.addCandlestickSeries({
-      upColor: '#00c853', downColor: '#ff1744',
-      borderUpColor: '#00c853', borderDownColor: '#ff1744',
-      wickUpColor: '#00c853', wickDownColor: '#ff1744',
-    })
+    let min = Infinity, max = -Infinity
+    data.forEach(d => { if (d.low < min) min = d.low; if (d.high > max) max = d.high })
+    const range = max - min || 1
+    min -= range * 0.05; max += range * 0.05
+    const yScale = chartH / (max - min)
 
-    const volumeSeries = chart.addHistogramSeries({
-      color: '#26a69a33', priceFormat: { type: 'volume' },
-      priceScaleId: '',
-    })
-    volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } })
+    const toX = (i) => padding.left + (i / (data.length - 1)) * chartW
+    const toY = (v) => padding.top + (max - v) * yScale
 
-    chartRef.current = chart
-    candleRef.current = candleSeries
-    volumeRef.current = volumeSeries
-
-    const resizeObserver = new ResizeObserver(() => {
-      if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth, height: containerRef.current.clientHeight })
-      }
-    })
-    resizeObserver.observe(containerRef.current)
-
-    return () => { resizeObserver.disconnect(); chart.remove() }
-  }, [])
-
-  // Load historical + subscribe realtime
-  useEffect(() => {
-    if (!candleRef.current || !volumeRef.current) return
-    setLoading(true)
-
-    const loadData = async () => {
-      const klines = await fetchKlines(symbol, timeframe)
-      const candleData = klines.map(k => ({ time: k.time, open: k.open, high: k.high, low: k.low, close: k.close }))
-      const volumeData = klines.map(k => ({ time: k.time, value: k.volume, color: k.close >= k.open ? '#00c85333' : '#ff174433' }))
-
-      candleRef.current.setData(candleData)
-      volumeRef.current.setData(volumeData)
-      setLoading(false)
-
-      // Subscribe to realtime updates
-      const unsub = subscribeToKlines(symbol, timeframe, (kline) => {
-        candleRef.current?.update({ time: kline.time, open: kline.open, high: kline.high, low: kline.low, close: kline.close })
-        volumeRef.current?.update({ time: kline.time, value: kline.volume, color: kline.close >= kline.open ? '#00c85333' : '#ff174433' })
-      })
-      return unsub
+    // Grid
+    ctx.strokeStyle = '#1a1a22'; ctx.lineWidth = 0.5
+    for (let i = 0; i < 5; i++) {
+      const y = padding.top + (chartH / 4) * i
+      ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(w - padding.right, y); ctx.stroke()
+      ctx.fillStyle = '#555'; ctx.font = '10px Inter'; ctx.fillText('$' + (max - (range / 4) * i).toFixed(1), w - padding.right + 4, y + 3)
     }
 
-    let cleanup
-    loadData().then(c => { cleanup = c })
+    // Candles
+    const candleW = Math.max(1, chartW / data.length * 0.7)
+    data.forEach((d, i) => {
+      const x = toX(i), isUp = d.close >= d.open
+      ctx.strokeStyle = isUp ? '#00c853' : '#ff1744'
+      ctx.fillStyle = isUp ? '#00c853' : '#ff1744'
+      ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(x, toY(d.high)); ctx.lineTo(x, toY(d.low)); ctx.stroke()
+      ctx.fillRect(x - candleW / 2, toY(Math.max(d.open, d.close)), candleW, Math.max(1, Math.abs(d.open - d.close) * yScale))
+    })
 
-    return () => { cleanup?.() }
+    // Current price line
+    if (currentPrice) {
+      const py = toY(currentPrice)
+      ctx.strokeStyle = '#f0f0f0'; ctx.lineWidth = 1; ctx.setLineDash([4, 4])
+      ctx.beginPath(); ctx.moveTo(padding.left, py); ctx.lineTo(w - padding.right, py); ctx.stroke()
+      ctx.setLineDash([])
+      ctx.fillStyle = '#f0f0f0'; ctx.font = 'bold 11px Inter'
+      ctx.fillText('$' + currentPrice.toFixed(1), w - padding.right + 4, py + 4)
+    }
+  }
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const container = containerRef.current
+    if (!canvas || !container) return
+
+    const resize = () => {
+      const rect = container.getBoundingClientRect()
+      canvas.width = rect.width * window.devicePixelRatio
+      canvas.height = rect.height * window.devicePixelRatio
+      canvas.style.width = rect.width + 'px'
+      canvas.style.height = rect.height + 'px'
+      const ctx = canvas.getContext('2d')
+      ctx.scale(window.devicePixelRatio, window.devicePixelRatio)
+      draw(ctx, rect.width, rect.height, dataRef.current, price)
+    }
+
+    window.addEventListener('resize', resize)
+    resize()
+
+    return () => window.removeEventListener('resize', resize)
+  }, [price])
+
+  useEffect(() => {
+    setLoading(true)
+    let unsub
+
+    const load = async () => {
+      const klines = await fetchKlines(symbol, timeframe)
+      dataRef.current = klines
+      if (klines.length) {
+        setPrice(klines[klines.length - 1].close)
+        setChange(((klines[klines.length - 1].close - klines[0].close) / klines[0].close) * 100)
+      }
+      setLoading(false)
+
+      unsub = subscribeToKlines(symbol, timeframe, (kline) => {
+        const last = dataRef.current[dataRef.current.length - 1]
+        if (last && last.time === kline.time) {
+          last.open = kline.open; last.high = kline.high; last.low = kline.low; last.close = kline.close; last.volume = kline.volume
+        } else {
+          dataRef.current.push(kline)
+          if (dataRef.current.length > 300) dataRef.current.shift()
+        }
+        setPrice(kline.close)
+      })
+    }
+
+    load()
+    return () => unsub?.()
   }, [symbol, timeframe])
 
+  // Redraw when price updates
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const container = containerRef.current
+    if (!canvas || !container) return
+    const ctx = canvas.getContext('2d')
+    const rect = container.getBoundingClientRect()
+    draw(ctx, rect.width, rect.height, dataRef.current, price)
+  }, [price])
+
   return (
-    <div className="relative flex-1">
+    <div className="relative flex-1" ref={containerRef}>
       {loading && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0d0e12]/80">
           <div className="flex items-center gap-2 text-sm text-slate-400">
@@ -86,7 +128,7 @@ export default function CandlestickChart({ symbol, timeframe }) {
           </div>
         </div>
       )}
-      <div ref={containerRef} className="w-full h-full" />
+      <canvas ref={canvasRef} className="w-full h-full" />
     </div>
   )
 }
