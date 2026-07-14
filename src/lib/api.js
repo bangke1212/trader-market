@@ -1,6 +1,6 @@
 const AGNES_BASE = 'https://apihub.agnes-ai.com/v1'
 const AGNES_KEY = 'sk-MVPAFALjPrN1FGmkdOTjQ31i4saUhVKR1feENGB2oexnujmB'
-const AGNES_MODEL = 'Agnes-2.0-Flash'
+const AGNES_MODEL = 'agnes-2.0-flash'
 
 export async function getAISignal(pair, priceData, timeframe) {
   const prompt = `You are a crypto trading analyst. Provide a trading signal.
