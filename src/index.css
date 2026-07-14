@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: #0a0b0d; color: #e1e1e6; }
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2a2a30; border-radius: 2px; }
+
+@keyframes flash-green { 0%, 100% { background: transparent; } 50% { background: rgba(0,200,83,0.15); } }
+@keyframes flash-red { 0%, 100% { background: transparent; } 50% { background: rgba(255,71,87,0.15); } }
+.flash-up { animation: flash-green 0.5s ease; }
+.flash-down { animation: flash-red 0.5s ease; }
