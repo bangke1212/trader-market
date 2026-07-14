@@ -33,91 +33,98 @@ REASON: [1-2 sentences]`
   } catch (e) { return {signal:'HOLD',confidence:0,entry:'',target:'',stopLoss:'',reason:`Error: ${e.message}`,raw:''} }
 }
 
-// Multi-source
+// Sources
 const BINANCE = ['api.binance.com','api1.binance.com','api2.binance.com','api3.binance.com','data-api.binance.vision']
 const CG = 'https://api.coingecko.com/api/v3'
-const PAIR_ID = {BTCUSDT:'bitcoin',ETHUSDT:'ethereum',BNBUSDT:'binancecoin',SOLUSDT:'solana',XRPUSDT:'ripple',DOGEUSDT:'dogecoin',ADAUSDT:'cardano'}
+const ID = {BTCUSDT:'bitcoin',ETHUSDT:'ethereum',BNBUSDT:'binancecoin',SOLUSDT:'solana',XRPUSDT:'ripple',DOGEUSDT:'dogecoin',ADAUSDT:'cardano'}
 
-async function binanceGet(path) {
-  const errs = []
+async function bGet(path) {
   for (const host of BINANCE) {
     try {
-      const ctrl = new AbortController(); const t = setTimeout(()=>ctrl.abort(),8000)
+      const ctrl = new AbortController(); const t = setTimeout(()=>ctrl.abort(),5000)
       const res = await fetch(`https://${host}${path}`,{signal:ctrl.signal}); clearTimeout(t)
-      if (!res.ok) { errs.push(`${host}=${res.status}`); continue }
-      return await res.json()
-    } catch (e) { errs.push(`${host}=${e.message.slice(0,25)}`); continue }
+      if(!res.ok)continue; return res.json()
+    } catch {}
   }
-  throw new Error(errs.join(' | '))
+  throw new Error('Binance all failed')
 }
+async function cgGet(path) { const r=await fetch(`${CG}${path}`); if(!r.ok)throw Error(`CG ${r.status}`); return r.json() }
 
-async function cgGet(path) { const r=await fetch(`${CG}${path}`); if(!r.ok)throw new Error(`CG ${r.status}`); return r.json() }
-
-async function bybitDepth(symbol) {
-  const url = `https://api.bybit.com/v5/market/orderbook?category=spot&symbol=${symbol}&limit=15`
-  const r = await fetch(url)
-  if (!r.ok) throw new Error(`Bybit ${r.status}`)
-  const d = await r.json()
-  if (d.retCode !== 0) throw new Error(`Bybit ${d.retMsg}`)
-  return { bids: d.result.bids?.map(([p,q])=>[+p,+q])||[], asks: d.result.asks?.map(([p,q])=>[+p,+q])||[] }
-}
-
-export function subscribeToTicker(symbol, onData) {
-  let active=true; const pair=symbol.toLowerCase(); let ws,timer
-  const connect=()=>{if(!active)return;try{ws=new WebSocket(`wss://stream.binance.com:9443/ws/${pair}@ticker`);ws.onmessage=e=>{if(!active)return;const d=JSON.parse(e.data);onData({price:+d.c,change:+d.P,high:+d.h,low:+d.l,volume:+d.v})};ws.onerror=()=>ws?.close();ws.onclose=()=>{if(active)setTimeout(connect,5000)}}catch{if(active)setTimeout(connect,5000)}}
-  connect()
-  const id=PAIR_ID[symbol]
-  const poll=async()=>{if(!active||!id)return;try{const d=await cgGet(`/simple/price?ids=${id}&vs_currencies=usd&include_24hr_change=true&include_24hr_high_low=true`);if(d[id])onData({price:d[id].usd,change:d[id].usd_24h_change||0,high:d[id].usd_24h_high||d[id].usd,low:d[id].usd_24h_low||d[id].usd,volume:0})}catch{}}
-  timer=setInterval(poll,20000);poll()
-  return()=>{active=false;try{ws?.close()}catch{};clearInterval(timer)}
-}
-
+// ===== KLINES: CoinGecko FIRST (fast), Binance backup =====
 export async function fetchKlines(symbol, interval, limit=200) {
-  try { const d=await binanceGet(`/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`); return d.map(x=>({time:x[0]/1000,open:+x[1],high:+x[2],low:+x[3],close:+x[4],volume:+x[5]})) } catch(e) { console.warn('Binance klines:',e.message) }
-  const id=PAIR_ID[symbol]; if(!id)return[]
-  const dm={'1m':'1','5m':'1','15m':'1','1h':'2','4h':'7','1d':'30'}
-  const raw=await cgGet(`/coins/${id}/ohlc?vs_currency=usd&days=${dm[interval]||'1'}&precision=full`)
-  if(!Array.isArray(raw))return[]
-  return raw.map(d=>({time:d[0]/1000,open:d[1],high:d[2],low:d[3],close:d[4],volume:0})).slice(-limit)
+  const id = ID[symbol]; if (!id) return []
+  const dm = {'1m':'1','5m':'1','15m':'1','1h':'2','4h':'7','1d':'30'}
+  try {
+    const raw = await cgGet(`/coins/${id}/ohlc?vs_currency=usd&days=${dm[interval]||'1'}&precision=full`)
+    if (Array.isArray(raw) && raw.length) return raw.map(d=>({time:d[0]/1000,open:d[1],high:d[2],low:d[3],close:d[4],volume:0})).slice(-limit)
+  } catch (e) { console.warn('CG klines:', e.message) }
+  // Binance fallback
+  try {
+    const d = await bGet(`/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`)
+    return d.map(x=>({time:x[0]/1000,open:+x[1],high:+x[2],low:+x[3],close:+x[4],volume:+x[5]}))
+  } catch (e) { console.warn('Binance klines:', e.message) }
+  return []
 }
 
 export function subscribeToKlines(symbol, interval, onData) {
-  let active=true; const pair=symbol.toLowerCase(); let ws,timer
-  const connect=()=>{if(!active)return;try{ws=new WebSocket(`wss://stream.binance.com:9443/ws/${pair}@kline_${interval}`);ws.onmessage=e=>{if(!active)return;const k=JSON.parse(e.data).k;onData({time:k.t/1000,open:+k.o,high:+k.h,low:+k.l,close:+k.c,volume:+k.v,isFinal:k.x})};ws.onerror=()=>ws?.close();ws.onclose=()=>{if(active)setTimeout(connect,5000)}}catch{if(active)setTimeout(connect,5000)}}
-  connect()
-  const id=PAIR_ID[symbol]
-  const poll=async()=>{if(!active||!id)return;try{const d=await cgGet(`/simple/price?ids=${id}&vs_currencies=usd`);if(d[id])onData({time:Math.floor(Date.now()/1000),price:d[id].usd,isFinal:false})}catch{}}
-  timer=setInterval(poll,15000);poll()
-  return()=>{active=false;try{ws?.close()}catch{};clearInterval(timer)}
+  let active = true; const id = ID[symbol]
+  // CoinGecko polling every 15s
+  const poll = async () => {
+    if (!active || !id) return
+    try {
+      const d = await cgGet(`/simple/price?ids=${id}&vs_currencies=usd`)
+      if (d[id]) onData({ time: Math.floor(Date.now()/1000), price: d[id].usd, isFinal: false })
+    } catch {}
+  }
+  poll()
+  const timer = setInterval(poll, 15000)
+  return () => { active = false; clearInterval(timer) }
 }
 
-// Depth: WS → Binance REST → Bybit
+// ===== DEPTH: Bybit FIRST (not blocked), Binance backup =====
 export function subscribeToDepth(symbol, onData) {
-  let active=true; const pair=symbol.toLowerCase(); let ws,restTimer,bybitTimer; let wsOk=false,dataOk=false
+  let active = true; let ok = false; let timer, ws
 
-  const connectWS=(hostIdx)=>{hostIdx=hostIdx||0;if(!active)return;const hosts=['stream.binance.com:9443','stream.binance.com:443'];if(hostIdx>=hosts.length){startBinanceRest();return}
-    try{ws=new WebSocket(`wss://${hosts[hostIdx]}/ws/${pair}@depth10@1000ms`);ws.onopen=()=>{wsOk=true;dataOk=true}
-      ws.onmessage=e=>{if(!active)return;const d=JSON.parse(e.data);onData({bids:d.bids?.map(([p,q])=>[+p,+q])||[],asks:d.asks?.map(([p,q])=>[+p,+q])||[]});dataOk=true}
-      ws.onerror=()=>{ws?.close();if(!wsOk)connectWS(hostIdx+1)}
-      ws.onclose=()=>{if(active&&!wsOk)connectWS(hostIdx+1);else if(active)setTimeout(()=>connectWS(0),5000)}
-    }catch{if(active)connectWS(hostIdx+1)}}
+  // Bybit REST first (fast, not blocked)
+  const bybitPoll = async () => {
+    if (!active || ok) return
+    try {
+      const r = await fetch(`https://api.bybit.com/v5/market/orderbook?category=spot&symbol=${symbol}&limit=15`)
+      const d = await r.json()
+      if (d.retCode === 0) {
+        onData({ bids: d.result.bids?.map(([p,q])=>[+p,+q])||[], asks: d.result.asks?.map(([p,q])=>[+p,+q])||[] })
+        ok = true
+      }
+    } catch {}
+  }
+
+  // Binance WS backup
+  const pair = symbol.toLowerCase()
+  const connectWS = (hostIdx) => {
+    hostIdx = hostIdx || 0; if (!active) return
+    const hosts = ['stream.binance.com:9443', 'stream.binance.com:443']
+    if (hostIdx >= hosts.length) return
+    try {
+      ws = new WebSocket(`wss://${hosts[hostIdx]}/ws/${pair}@depth10@1000ms`)
+      ws.onmessage = e => { if (!active) return; const d = JSON.parse(e.data); onData({ bids: d.bids?.map(([p,q])=>[+p,+q])||[], asks: d.asks?.map(([p,q])=>[+p,+q])||[] }); ok = true }
+      ws.onerror = () => { ws?.close(); if (!ok) connectWS(hostIdx + 1) }
+      ws.onclose = () => { if (active && !ok) connectWS(hostIdx + 1); else if (active) setTimeout(() => connectWS(0), 5000) }
+    } catch { if (!ok) connectWS(hostIdx + 1) }
+  }
+
+  bybitPoll()
+  timer = setInterval(bybitPoll, 3000)
   connectWS()
-
-  const startBinanceRest=()=>{if(!active||dataOk)return
-    const poll=async()=>{if(!active||dataOk)return;try{const d=await binanceGet(`/api/v3/depth?symbol=${symbol}&limit=15`);onData({bids:d.bids?.map(([p,q])=>[+p,+q])||[],asks:d.asks?.map(([p,q])=>[+p,+q])||[]});dataOk=true}catch{startBybitPoll()}}
-    poll();restTimer=setInterval(poll,3000)}
-
-  const startBybitPoll=()=>{if(!active||dataOk)return
-    const poll=async()=>{if(!active||dataOk)return;try{const d=await bybitDepth(symbol);onData(d);dataOk=true}catch{}}
-    poll();bybitTimer=setInterval(poll,3000)}
-
-  setTimeout(()=>{if(!dataOk&&active){startBinanceRest();setTimeout(()=>{if(!dataOk&&active)startBybitPoll()},10000)}},5000)
-  return()=>{active=false;try{ws?.close()}catch{};clearInterval(restTimer);clearInterval(bybitTimer)}
+  return () => { active = false; clearInterval(timer); try { ws?.close() } catch {} }
 }
 
+// ===== 24hr =====
 export async function fetch24hr(symbol) {
-  try{const d=await binanceGet(`/api/v3/ticker/24hr?symbol=${symbol}`);return{price:+d.lastPrice,change:+d.priceChangePercent,high:+d.highPrice,low:+d.lowPrice,volume:+d.volume}}catch{
-    const id=PAIR_ID[symbol];const d=await cgGet(`/simple/price?ids=${id}&vs_currencies=usd&include_24hr_change=true&include_24hr_high_low=true`)
-    return{price:d[id].usd,change:d[id].usd_24h_change||0,high:d[id].usd_24h_high||d[id].usd,low:d[id].usd_24h_low||d[id].usd,volume:0}
+  const id = ID[symbol]
+  try {
+    const d = await cgGet(`/simple/price?ids=${id}&vs_currencies=usd&include_24hr_change=true&include_24hr_high_low=true`)
+    return { price: d[id].usd, change: d[id].usd_24h_change||0, high: d[id].usd_24h_high||d[id].usd, low: d[id].usd_24h_low||d[id].usd, volume: 0 }
+  } catch {
+    try { const d = await bGet(`/api/v3/ticker/24hr?symbol=${symbol}`); return { price:+d.lastPrice, change:+d.priceChangePercent, high:+d.highPrice, low:+d.lowPrice, volume:+d.volume } } catch { return { price:0, change:0, high:0, low:0, volume:0 } }
   }
 }
