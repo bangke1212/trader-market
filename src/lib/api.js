@@ -4,11 +4,9 @@ const AGNES_MODEL = 'agnes-2.0-flash'
 
 export async function getAISignal(pair, priceData, timeframe) {
   const prompt = `You are a crypto trading analyst. Provide a trading signal.
-
 Pair: ${pair} | TF: ${timeframe}
 Price: $${priceData.price || 0} | 24h: ${priceData.change || 0}%
 High: $${priceData.high || 0} | Low: $${priceData.low || 0}
-
 Format:
 SIGNAL: [BUY/SELL/HOLD]
 CONFIDENCE: [1-100]%
@@ -36,7 +34,7 @@ REASON: [1-2 sentences]`
   } catch (e) { return { signal: 'HOLD', confidence: 0, entry: '', target: '', stopLoss: '', reason: `Error: ${e.message}`, raw: '' } }
 }
 
-// ============ Multi-source: Binance (5 hosts) → CoinGecko fallback ============
+// Multi-source fallback
 const BINANCE_HOSTS = ['api.binance.com', 'api1.binance.com', 'api2.binance.com', 'api3.binance.com', 'data-api.binance.vision']
 const CG = 'https://api.coingecko.com/api/v3'
 const PAIR_ID = { BTCUSDT:'bitcoin', ETHUSDT:'ethereum', BNBUSDT:'binancecoin', SOLUSDT:'solana', XRPUSDT:'ripple', DOGEUSDT:'dogecoin', ADAUSDT:'cardano' }
@@ -60,9 +58,9 @@ async function cgGet(path) {
   return res.json()
 }
 
+// Ticker
 export function subscribeToTicker(symbol, onData) {
   let active = true; const pair = symbol.toLowerCase(); let ws, timer
-
   const connect = () => {
     if (!active) return
     try {
@@ -73,13 +71,13 @@ export function subscribeToTicker(symbol, onData) {
     } catch { if (active) setTimeout(connect, 5000) }
   }
   connect()
-
   const id = PAIR_ID[symbol]
   const poll = async () => { if (!active||!id) return; try { const d = await cgGet(`/simple/price?ids=${id}&vs_currencies=usd&include_24hr_change=true&include_24hr_high_low=true`); if (d[id]) onData({ price:d[id].usd, change:d[id].usd_24h_change||0, high:d[id].usd_24h_high||d[id].usd, low:d[id].usd_24h_low||d[id].usd, volume:0 }) } catch {} }
   timer = setInterval(poll, 20000); poll()
   return () => { active = false; try { ws?.close() } catch {}; clearInterval(timer) }
 }
 
+// Klines
 export async function fetchKlines(symbol, interval, limit = 200) {
   try {
     const data = await binanceGet(`/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`)
@@ -94,7 +92,6 @@ export async function fetchKlines(symbol, interval, limit = 200) {
 
 export function subscribeToKlines(symbol, interval, onData) {
   let active = true; const pair = symbol.toLowerCase(); let ws, timer
-
   const connect = () => {
     if (!active) return
     try {
@@ -105,28 +102,49 @@ export function subscribeToKlines(symbol, interval, onData) {
     } catch { if (active) setTimeout(connect, 5000) }
   }
   connect()
-
   const id = PAIR_ID[symbol]
   const poll = async () => { if (!active||!id) return; try { const d = await cgGet(`/simple/price?ids=${id}&vs_currencies=usd`); if (d[id]) onData({ time:Math.floor(Date.now()/1000), price:d[id].usd, isFinal:false }) } catch {} }
   timer = setInterval(poll, 15000); poll()
   return () => { active = false; try { ws?.close() } catch {}; clearInterval(timer) }
 }
 
+// Depth — WS dulu, REST fallback
 export function subscribeToDepth(symbol, onData) {
-  let active = true; const pair = symbol.toLowerCase(); let ws
-  const connect = () => {
+  let active = true; const pair = symbol.toLowerCase(); let ws, restTimer; let wsOk = false
+
+  const connectWS = (hostIdx) => {
     if (!active) return
+    hostIdx = hostIdx || 0
+    const hosts = ['stream.binance.com:9443', 'stream.binance.com:443']
+    if (hostIdx >= hosts.length) { startRestPoll(); return }
     try {
-      ws = new WebSocket(`wss://stream.binance.com:9443/ws/${pair}@depth10@1000ms`)
+      ws = new WebSocket(`wss://${hosts[hostIdx]}/ws/${pair}@depth10@1000ms`)
+      ws.onopen = () => { wsOk = true }
       ws.onmessage = e => { if (!active) return; const d = JSON.parse(e.data); onData({ bids:d.bids?.map(([p,q])=>[+p,+q])||[], asks:d.asks?.map(([p,q])=>[+p,+q])||[] }) }
-      ws.onerror = () => ws?.close()
-      ws.onclose = () => { if (active) setTimeout(connect, 5000) }
-    } catch { if (active) setTimeout(connect, 5000) }
+      ws.onerror = () => { ws?.close(); if (!wsOk) connectWS(hostIdx + 1) }
+      ws.onclose = () => { if (active && !wsOk) connectWS(hostIdx + 1); else if (active) setTimeout(() => connectWS(0), 5000) }
+    } catch { if (active) connectWS(hostIdx + 1) }
   }
-  connect()
-  return () => { active = false; try { ws?.close() } catch {} }
+
+  const startRestPoll = () => {
+    if (!active) return
+    const poll = async () => {
+      if (!active) return
+      try {
+        const d = await binanceGet(`/api/v3/depth?symbol=${symbol}&limit=15`)
+        onData({ bids: d.bids?.map(([p,q])=>[+p,+q])||[], asks: d.asks?.map(([p,q])=>[+p,+q])||[] })
+      } catch {}
+    }
+    poll()
+    restTimer = setInterval(poll, 3000)
+  }
+
+  connectWS()
+  setTimeout(() => { if (!wsOk && active) startRestPoll() }, 5000)
+  return () => { active = false; try { ws?.close() } catch {}; clearInterval(restTimer) }
 }
 
+// 24hr
 export async function fetch24hr(symbol) {
   try { const d = await binanceGet(`/api/v3/ticker/24hr?symbol=${symbol}`); return { price:+d.lastPrice, change:+d.priceChangePercent, high:+d.highPrice, low:+d.lowPrice, volume:+d.volume } }
   catch {
