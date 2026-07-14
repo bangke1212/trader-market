@@ -9,7 +9,7 @@ export default function AISignal({ symbol }) {
   const [priceData, setPriceData] = useState(null)
 
   useEffect(() => {
-    fetch24hr(symbol).then(setPriceData)
+    fetch24hr(symbol).then(setPriceData).catch(() => {})
     setSignal(null)
     setError('')
   }, [symbol])
@@ -29,8 +29,21 @@ export default function AISignal({ symbol }) {
     setLoading(false)
   }, [symbol])
 
-  const color = signal?.signal === 'BUY' ? 'emerald' : signal?.signal === 'SELL' ? 'red' : 'slate'
-  const Icon = signal?.signal === 'BUY' ? TrendingUp : signal?.signal === 'SELL' ? TrendingDown : Minus
+  const isBuy = signal?.signal === 'BUY'
+  const isSell = signal?.signal === 'SELL'
+  const Icon = isBuy ? TrendingUp : isSell ? TrendingDown : Minus
+  const sigColor = isBuy ? '#00e676' : isSell ? '#ff1744' : '#64748b'
+  const sigTextColor = isBuy ? 'text-emerald-400' : isSell ? 'text-red-400' : 'text-slate-400'
+  const sigBoxClass = isBuy
+    ? 'bg-emerald-900/20 border-emerald-800/30'
+    : isSell
+    ? 'bg-red-900/20 border-red-800/30'
+    : 'bg-slate-800/30 border-slate-700/30'
+  const sigBadgeClass = isBuy
+    ? 'bg-emerald-500/20'
+    : isSell
+    ? 'bg-red-500/20'
+    : 'bg-slate-500/20'
 
   return (
     <div className="flex flex-col h-full bg-[#0d0e12] border-l border-slate-800">
@@ -42,12 +55,13 @@ export default function AISignal({ symbol }) {
         <span className="text-[9px] text-purple-500 bg-purple-500/10 px-1.5 py-0.5 rounded">Agnes AI</span>
       </div>
 
-      {/* Price Info */}
       {priceData && (
         <div className="px-3 py-2 border-b border-slate-800/50 space-y-1">
           <div className="flex justify-between text-xs">
             <span className="text-slate-500">Price</span>
-            <span className="text-slate-200 font-medium">${priceData.price < 1 ? priceData.price.toFixed(4) : priceData.price.toFixed(2)}</span>
+            <span className="text-slate-200 font-medium">
+              ${priceData.price < 1 ? priceData.price.toFixed(4) : priceData.price.toFixed(2)}
+            </span>
           </div>
           <div className="flex justify-between text-xs">
             <span className="text-slate-500">24h Change</span>
@@ -64,7 +78,6 @@ export default function AISignal({ symbol }) {
         </div>
       )}
 
-      {/* Analyze Button */}
       <div className="px-3 py-2">
         <button
           onClick={analyze}
@@ -79,7 +92,6 @@ export default function AISignal({ symbol }) {
         </button>
       </div>
 
-      {/* Signal Result */}
       <div className="flex-1 px-3 pb-3 overflow-y-auto">
         {error && (
           <div className="p-3 rounded-lg bg-red-900/20 border border-red-800/30 text-xs text-red-400">
@@ -88,23 +100,17 @@ export default function AISignal({ symbol }) {
         )}
 
         {signal && (
-          <div className={`p-3 rounded-lg border ${
-            signal.signal === 'BUY' ? 'bg-emerald-900/20 border-emerald-800/30' :
-            signal.signal === 'SELL' ? 'bg-red-900/20 border-red-800/30' :
-            'bg-slate-800/30 border-slate-700/30'
-          }`}>
-            {/* Signal Header */}
+          <div className={`p-3 rounded-lg border ${sigBoxClass}`}>
             <div className="flex items-center gap-2 mb-3">
-              <div className={`p-1.5 rounded-lg ${signal.signal === 'BUY' ? 'bg-emerald-500/20' : signal.signal === 'SELL' ? 'bg-red-500/20' : 'bg-slate-500/20'}`}>
-                <Icon size={20} className={`text-${color}-400`} />
+              <div className={`p-1.5 rounded-lg ${sigBadgeClass}`}>
+                <Icon size={20} style={{ color: sigColor }} />
               </div>
               <div>
-                <span className={`text-sm font-bold text-${color}-400`}>{signal.signal}</span>
+                <span className={`text-sm font-bold ${sigTextColor}`}>{signal.signal}</span>
                 <span className="text-[10px] text-slate-500 ml-1">{signal.confidence}% confidence</span>
               </div>
             </div>
 
-            {/* Levels */}
             <div className="space-y-1.5 mb-2">
               {signal.entry && (
                 <div className="flex items-center justify-between text-[10px]">
@@ -126,7 +132,6 @@ export default function AISignal({ symbol }) {
               )}
             </div>
 
-            {/* Reason */}
             <p className="text-[10px] text-slate-400 leading-relaxed border-t border-slate-700/50 pt-2 mt-2">
               {signal.reason}
             </p>
@@ -141,7 +146,6 @@ export default function AISignal({ symbol }) {
         )}
       </div>
 
-      {/* Footer */}
       <div className="px-3 py-1.5 border-t border-slate-800 flex items-center gap-1 text-[9px] text-slate-600">
         <RefreshCw size={8} className={loading ? 'animate-spin' : ''} />
         <span>Agnes-2.0-Flash</span>
