@@ -1,6 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { TrendingUp, TrendingDown } from 'lucide-react'
-import { subscribeToTicker, fetch24hr } from '../lib/api'
 
 const PAIRS = [
   { symbol: 'BTCUSDT', name: 'BTC/USDT' },
@@ -12,28 +11,48 @@ const PAIRS = [
   { symbol: 'ADAUSDT', name: 'ADA/USDT' },
 ]
 
+const CG_IDS = { BTCUSDT:'bitcoin', ETHUSDT:'ethereum', BNBUSDT:'binancecoin', SOLUSDT:'solana', XRPUSDT:'ripple', DOGEUSDT:'dogecoin', ADAUSDT:'cardano' }
+
 export default function TickerBar({ onSelectPair, activePair }) {
   const [tickers, setTickers] = useState({})
   const [flash, setFlash] = useState({})
 
+  // Batch poll CoinGecko for ALL pairs in 1 call every 15s
   useEffect(() => {
-    const cleanups = []
-    PAIRS.forEach((p, i) => {
-      setTimeout(() => {
-        const unsub = subscribeToTicker(p.symbol, (data) => {
-          setTickers(prev => {
-            const old = prev[p.symbol]
-            if (old && old.price !== data.price) {
-              setFlash(f => ({ ...f, [p.symbol]: data.price > old.price ? 'up' : 'down' }))
-              setTimeout(() => setFlash(f => ({ ...f, [p.symbol]: null })), 500)
+    const ids = PAIRS.map(p => CG_IDS[p.symbol]).join(',')
+    const symbols = PAIRS.map(p => p.symbol)
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true&include_24hr_high_low=true`)
+        const d = await res.json()
+        setTickers(prev => {
+          const next = { ...prev }
+          symbols.forEach(sym => {
+            const id = CG_IDS[sym]
+            if (!d[id]) return
+            const old = prev[sym]
+            const price = d[id].usd
+            if (old && old.price !== price) {
+              setFlash(f => ({ ...f, [sym]: price > old.price ? 'up' : 'down' }))
+              setTimeout(() => setFlash(f => ({ ...f, [sym]: null })), 500)
             }
-            return { ...prev, [p.symbol]: data }
+            next[sym] = {
+              price,
+              change: d[id].usd_24h_change || 0,
+              high: d[id].usd_24h_high || price,
+              low: d[id].usd_24h_low || price,
+              volume: 0,
+            }
           })
+          return next
         })
-        cleanups.push(unsub)
-      }, i * 200)
-    })
-    return () => cleanups.forEach(c => c())
+      } catch {}
+    }
+
+    poll()
+    const timer = setInterval(poll, 15000)
+    return () => clearInterval(timer)
   }, [])
 
   return (
